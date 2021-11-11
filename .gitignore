@@ -29,3 +29,10 @@ bld/
 msbuild.log
 msbuild.err
 msbuild.wrn
+
+app/
+data/
+config.json
+*.[vV]q3
+*.[cC]pm
+running

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net6.0</TargetFramework>
+    <PublishSingleFile Condition="'$(PUBLISH)' != ''">true</PublishSingleFile>
+    <SelfContained Condition="'$(PUBLISH)' != ''">true</SelfContained>
+    <RuntimeIdentifier Condition="'$(PUBLISH)' != ''">win-x64</RuntimeIdentifier>
+    <PublishReadyToRun Condition="'$(PUBLISH)' != ''">true</PublishReadyToRun>
+    <DefineConstants Condition="'$(NO_NITO)' != ''">NO_NITO</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="HtmlAgilityPack" Version="1.11.37" />
+    <PackageReference Condition="'$(NO_NITO)' == ''" Include="Nito.AsyncEx" Version="5.1.2" />
+  </ItemGroup>
+
+</Project>
