@@ -335,7 +335,7 @@ namespace DfwcResultsBot
                     await Task.Delay(period, _stop.Token);
                     if (_round != -1)
                     {
-                        await _chat?.SendMessage($"Demo watch voting for round {_round} is up.\nType: `!dfwc vq3 <player-name>` or `!dfwc cpm <player-name>` to vote.\nList of all players at: https://dfwc.q3df.org/comp/dfwc2021/standings.html");
+                        await _chat?.SendMessage($"Demo watch voting for round {_round} is up.\nType: `!{_config.Command} vq3 <player-name>` or `!{_config.Command} cpm <player-name>` to vote.\nList of all players at: https://dfwc.q3df.org/comp/dfwc2021/standings.html");
                     }
                 }
             }

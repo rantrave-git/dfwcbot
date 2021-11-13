@@ -57,7 +57,7 @@ namespace DfwcResultsBot
             return (target.i, target.x.Demo);
         }
         private string GetArchivePath(Physics physics, string demoname) => $"{physics.ToString().ToLowerInvariant()}/{demoname}";
-        private Uri GetUri(int round, string demoname) => new Uri(new Uri("https://dfwc.q3df.org"), $"/comp/dfwc2021/round/3/demo/{Uri.EscapeDataString(demoname)}");
+        private Uri GetUri(int round, string demoname) => new Uri(new Uri("https://dfwc.q3df.org"), $"/comp/dfwc2021/round/{round}/demo/{Uri.EscapeDataString(demoname)}");
         public List<string> Top(Physics physics, int top) => _records[physics].Select(x => x.Nickname).Take(top).ToList();
         private async Task<bool> TryDownloadAndSave(HttpClient client, Uri uri, string targetName)
         {
