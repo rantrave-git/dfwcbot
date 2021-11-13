@@ -257,8 +257,8 @@ namespace DfwcResultsBot
             byte[] array = ArrayPool<byte>.Shared.Rent(16 * 1024 * 1024);
             try
             {
-                using (var fstream = File.OpenWrite(fname))
                 using (var s = await arch.Content.ReadAsStreamAsync())
+                using (var fstream = File.OpenWrite(fname))
                 {
                     while (true)
                     {

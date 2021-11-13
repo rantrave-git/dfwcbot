@@ -67,6 +67,7 @@ namespace DfwcResultsBot
             {
                 for (int i = 0; i < 20; ++i)
                 {
+                    int total = 0;
                     try
                     {
                         using (var response = await client.GetAsync(uri))
@@ -78,6 +79,7 @@ namespace DfwcResultsBot
                             {
                                 var len = await stream.ReadAsync(array);
                                 if (len == 0) break; // download successfull
+                                total += len;
                                 await fstream.WriteAsync(array, 0, len);
                             }
                         }
@@ -85,6 +87,7 @@ namespace DfwcResultsBot
                     catch (Exception e)
                     {
                         Console.WriteLine(e);
+                        File.Delete(targetName);
                         if (i == 19)
                         {
                             return false;
