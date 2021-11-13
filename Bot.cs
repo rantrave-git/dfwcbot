@@ -70,7 +70,7 @@ namespace DfwcResultsBot
             _config = config;
             _commandRe = new Regex(@$"^([\\/]w\s.*)*[!+]{config.Command}\s+(.*)", RegexOptions.Compiled);
         }
-        private async Task DoExtract(HttpClient client, int round, Physics physics)
+        private List<(int, string)> SelectDemolist(Physics physics)
         {
             var top = _places.Top(physics, _config.GetPhysicsConfig(physics).TotalDemos);
             var rq = _config.GetPhysicsConfig(physics).RequiredTop;
@@ -81,9 +81,7 @@ namespace DfwcResultsBot
                 .ToList();
             var voted = _voteCounter.Summup(physics, _config.UserWeights).Select(x => x.Item1).Concat(top.Skip(rq)).ToList();
 
-            await _places.Extract(client, round, physics, required.ToList(),
-                voted, _config.ExtractDirectory,
-                _config.GetPhysicsConfig(physics).TotalDemos);
+            return _places.ListDemos(physics, required, voted, _config.GetPhysicsConfig(physics).TotalDemos);
         }
         private async Task<(HttpClientHandler Handler, HttpClient Client)> GetLoggedClient()
         {
@@ -108,24 +106,47 @@ namespace DfwcResultsBot
             }
             return (hh, hc);
         }
-        private async Task PerformExtraction((HttpClientHandler Handler, HttpClient Client) loggedContext, string initiator, int round)
+        private async Task PerformExtraction(string initiator, int round)
         {
-            try
-            {
-                await Task.WhenAll(DoExtract(loggedContext.Client, round, Physics.Vq3), DoExtract(loggedContext.Client, round, Physics.Cpm));
-                if (File.Exists(RunningFilename)) File.Delete(RunningFilename);
-            }
-            catch (Exception e)
-            {
-                await _chat?.SendMessage($"/w {initiator} sorry but unable to download yet. Error log's saved.");
-                await File.WriteAllTextAsync(".log", e.ToString());
+            var demosVq3 = SelectDemolist(Physics.Vq3);
+            var demosCpm = SelectDemolist(Physics.Cpm);
+            var dirpathVq3 = Path.Combine(_config.ExtractDirectory, $"round{round}", Physics.Vq3.ToString().ToLowerInvariant());
+            var dirpathCpm = Path.Combine(_config.ExtractDirectory, $"round{round}", Physics.Cpm.ToString().ToLowerInvariant());
+            if (!Directory.Exists(dirpathVq3)) Directory.CreateDirectory(dirpathVq3);
+            if (!Directory.Exists(dirpathCpm)) Directory.CreateDirectory(dirpathCpm);
 
-                _round = round;
-            }
-            finally
+            for (int i = 0; i < 20; ++i)
             {
-                loggedContext.Client.Dispose();
-                loggedContext.Handler.Dispose();
+                var loggedContext = await GetLoggedClient();
+                try
+                {
+                    if (demosVq3.Count > 0)
+                    {
+                        if (_config.UseArchive) demosVq3 = await _places.TryExtractAndSave(round, Physics.Vq3, demosVq3, dirpathVq3);
+
+                        demosVq3 = await _places.TryDownload(loggedContext.Client, round, Physics.Vq3, demosVq3, dirpathVq3);
+                    }
+                    if (demosCpm.Count > 0)
+                    {
+                        if (_config.UseArchive) demosCpm = await _places.TryExtractAndSave(round, Physics.Cpm, demosCpm, dirpathCpm);
+
+                        demosCpm = await _places.TryDownload(loggedContext.Client, round, Physics.Cpm, demosCpm, dirpathCpm);
+                    }
+                    if (demosVq3.Count == 0 && demosCpm.Count == 0) break;
+                    if (i == 19)
+                    {
+                        File.WriteAllText(".log", $"There was errors when downloading:\n" +
+                            $"Vq3:\n{String.Join("\n", demosVq3.Select(x => $"  {x.Item1}: {x.Item2}"))}" +
+                            $"Cpm:\n{String.Join("\n", demosCpm.Select(x => $"  {x.Item1}: {x.Item2}"))}"
+                        );
+                    }
+                    await Task.Delay(i * 1000);
+                }
+                finally
+                {
+                    loggedContext.Client.Dispose();
+                    loggedContext.Handler.Dispose();
+                }
             }
         }
         // private const string _privatePrefix = "/w ";
@@ -169,27 +190,19 @@ namespace DfwcResultsBot
                             try
                             {
                                 _places = await _players.LoadPlaces(context.Client, _round, _config.UseArchive);
+                                if (_places == null)
+                                {
+                                    await _chat?.SendMessage($"{privatePrefix}{message.Sender} results are not ready yet");
+                                    return;
+                                }
                             }
-                            catch
+                            finally
                             {
                                 context.Client.Dispose();
                                 context.Handler.Dispose();
                             }
-                            if (_places == null)
-                            {
-                                try
-                                {
-                                    await _chat?.SendMessage($"{privatePrefix}{message.Sender} results are not ready yet");
-                                }
-                                finally
-                                {
-                                    context.Client.Dispose();
-                                    context.Handler.Dispose();
-                                }
-                                return;
-                            }
                             _saveResetEvent.Set();
-                            _ = PerformExtraction(context, message.Sender, _round);
+                            _ = PerformExtraction(message.Sender, _round);
                             _round = -1;
                         }
                         else
