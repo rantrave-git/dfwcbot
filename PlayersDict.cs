@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -96,7 +97,7 @@ namespace DfwcResultsBot
             var imc = imconfidence = selection.FirstOrDefault().Item2;
             return selection.Where(x => x.Item2 == imc).Select(x => x.i).ToList();
         }
-        private Dictionary<string, char> DecodeTable = new Dictionary<string, char>()
+        static private Dictionary<string, char> DecodeTable = new Dictionary<string, char>()
         {
             ["rbrack"] = '\x005D',
             ["lbrack"] = '\x005B',
@@ -201,8 +202,9 @@ namespace DfwcResultsBot
             ["atilde"] = '\x00E3',
             ["auml"] = '\x00E4',
         };
-        private string Decode(string s)
+        static private string Decode(string s)
         {
+            if (s == null) return null;
             char[] result = ArrayPool<char>.Shared.Rent(s.Length);
             var last = 0;
             var stpos = 0;
@@ -230,26 +232,6 @@ namespace DfwcResultsBot
             {
                 ArrayPool<char>.Shared.Return(result);
             }
-        }
-        private List<(string, string, string, string, int)> GetRecords(IEnumerable<HtmlNode> tables, Physics physics)
-        {
-            var table = tables.FirstOrDefault(x => x.ChildNodes.Any(y => y.Name == "caption" && y.ChildNodes.Any(z => z.InnerHtml.ToLowerInvariant() == physics.ToString().ToLowerInvariant())));
-            var recs = table?.Descendants("tr").Skip(1)
-                .Select((x, i) =>
-                {
-                    var name = HttpUtility.HtmlDecode(x.Descendants("td").Skip(1).FirstOrDefault()?.InnerText.Trim());//String.Join("", <>  First().Descendants("span").Select(y => y.InnerText));
-                    var demoa = x.Descendants("td").Skip(2).FirstOrDefault()?.Descendants("a").First();
-                    if (demoa != null)
-                    {
-                        var demoref = Decode(demoa.GetAttributeValue("href", "")); //Uri.UnescapeDataString();
-                        var demoname = demoref.Split('/').LastOrDefault();
-                        var time = HttpUtility.HtmlDecode(demoa.InnerText);
-                        return (name, demoname, demoref, time, i);
-                    }
-                    return (null, null, null, null, -1);
-                }).Where(x => x.name != null);
-
-            return recs?.ToList();
         }
         public async Task LoadNicknames()
         {
@@ -297,25 +279,46 @@ namespace DfwcResultsBot
                 ArrayPool<byte>.Shared.Return(array);
             }
         }
-
-        public async Task<Places> LoadPlaces(int round, bool loadArchive = false)
+        static private (string Name, string Demoname, string Demoref) BuildString(HtmlNode node)
         {
-            using var hc = new HttpClient();
-            var archive = loadArchive ? LoadAllDemos(hc, round) : Task.FromResult<string>(null);
-            using var response = await hc.GetAsync($"https://dfwc.q3df.org/comp/dfwc2021/round/{round}/");
-            var page = await response.Content.ReadAsStringAsync();
-            var htmlDoc = new HtmlDocument();
-            htmlDoc.LoadHtml(page);
+            if (node == null) return (null, null, null);
+            var name = System.Web.HttpUtility.HtmlDecode(node.ChildNodes.FirstOrDefault(x => x.HasClass("nick"))?.InnerText);
+            if (name == null) return (null, null, null);
+            name = name.Trim();
+            var demoref = PlayersDict.Decode(Uri.UnescapeDataString(node.Descendants("a").FirstOrDefault()?.GetAttributeValue("href", null)));
+            var demoname = demoref.Split('/').LastOrDefault();
 
-            var nodes = htmlDoc.DocumentNode.Descendants("table").Where(
-                x => x.ChildNodes.Any(
-                    y => y.Name == "caption" && y.ChildNodes.Any(
-                        z => z.InnerHtml.ToLowerInvariant() == "vq3" || z.InnerHtml.ToLowerInvariant() == "cpm"
-                    )
-                )
-            ).ToList();
-            if (nodes.Count == 0) return null;
-            return new Places(round, GetRecords(nodes, Physics.Vq3), GetRecords(nodes, Physics.Cpm), archive);
+            return (name, demoname, demoref);
+        }
+
+        public async Task<Places> LoadPlaces(HttpClient hc, int round, bool loadArchive = false)
+        {
+            var archive = loadArchive ? LoadAllDemos(hc, round) : Task.FromResult<string>(null);
+
+            string html;
+            using (var resp = await hc.GetAsync($"https://dfwc.q3df.org/comp/dfwc2021/round/{round}/stream.html"))
+            {
+                if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
+                resp.EnsureSuccessStatusCode();
+                html = await resp.Content.ReadAsStringAsync();
+            }
+            var htmlDoc = new HtmlDocument();
+            htmlDoc.LoadHtml(html);
+
+            html = htmlDoc.GetElementbyId("preview_set").InnerHtml;
+
+            htmlDoc = new HtmlDocument(); // does it nessesary?
+            htmlDoc.LoadHtml(html);
+            var table = htmlDoc.DocumentNode.Descendants("div").Where(x => x.HasClass("line")).Select((x, i) =>
+            {
+                var vq3 = x.ChildNodes.FirstOrDefault(x => x.HasClass("vq3"));
+                var cpm = x.ChildNodes.FirstOrDefault(x => x.HasClass("cpm"));
+                return (BuildString(vq3), BuildString(cpm), i);
+            }).ToList();
+            var vq3 = table.Select(x => (x.Item1.Name, x.Item1.Demoname, x.Item1.Demoref, x.Item3)).Where(x => x.Name != null).ToList();
+            var cpm = table.Select(x => (x.Item2.Name, x.Item2.Demoname, x.Item2.Demoref, x.Item3)).Where(x => x.Name != null).ToList();
+            if (vq3.Count == 0 && cpm.Count == 0) return null;
+            return new Places(round, vq3, cpm, archive);
         }
     }
 }

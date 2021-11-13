@@ -5,6 +5,8 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Net.Http;
+using System.Net;
 
 namespace DfwcResultsBot
 {
@@ -21,7 +23,8 @@ namespace DfwcResultsBot
     }
     class DfwcBotConfiguration
     {
-        public string PrivatePrefix { get; set; } = "/w ";
+        public string PrivatePrefix { get; set; } = ""; // "/w " but not working ='(
+        public double? AnounceTimeSeconds { get; set; } = 600;
         public string Command { get; set; } = "vote";
         public bool UseArchive { get; set; } = false;
         public string ChannelName { get; set; }
@@ -30,7 +33,8 @@ namespace DfwcResultsBot
         public SelectionConfiguration Vq3 { get; set; }
         public SelectionConfiguration Cpm { get; set; }
         public Dictionary<string, int> UserWeights { get; set; }
-        public Credentials Credentials { get; set; }
+        public Credentials TwitchTvCredentials { get; set; }
+        public Credentials DfwcOrgCredentials { get; set; }
         public SelectionConfiguration GetPhysicsConfig(Physics physics)
         {
             switch (physics)
@@ -66,21 +70,49 @@ namespace DfwcResultsBot
             _config = config;
             _commandRe = new Regex(@$"^([\\/]w\s.*)*[!+]{config.Command}\s+(.*)", RegexOptions.Compiled);
         }
-        private async Task DoExtract(int round, Physics physics)
+        private async Task DoExtract(HttpClient client, int round, Physics physics)
         {
+            var top = _places.Top(physics, _config.GetPhysicsConfig(physics).TotalDemos);
+            var rq = _config.GetPhysicsConfig(physics).RequiredTop;
             var required = _config.GetPhysicsConfig(physics).RequiredPlayers
                 .Select(x => _players.FindNickname(x, out var y, out _) ? y : null)
-                .Where(x => x != null).Union(_places.Top(physics, _config.GetPhysicsConfig(physics).RequiredTop)).ToList();
-            var voted = _voteCounter.Summup(physics, _config.UserWeights);
-            await _places.Extract(round, physics, required.ToList(),
-                voted.Select(x => x.Item1).ToList(), _config.ExtractDirectory,
+                .Where(x => x != null)
+                .Union(top.Take(rq))
+                .ToList();
+            var voted = _voteCounter.Summup(physics, _config.UserWeights).Select(x => x.Item1).Concat(top.Skip(rq)).ToList();
+
+            await _places.Extract(client, round, physics, required.ToList(),
+                voted, _config.ExtractDirectory,
                 _config.GetPhysicsConfig(physics).TotalDemos);
         }
-        private async Task PerformExtraction(string initiator, int round)
+        private async Task<(HttpClientHandler Handler, HttpClient Client)> GetLoggedClient()
+        {
+            var hh = new HttpClientHandler()
+            {
+                CookieContainer = new CookieContainer()
+            };
+            var hc = new HttpClient(hh);
+            using (var resp = await hc.GetAsync("https://q3df.org/index"))
+            {
+                resp.EnsureSuccessStatusCode();
+            }
+            var creds = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("username", _config.DfwcOrgCredentials.Nickname),
+                new KeyValuePair<string, string>("password",_config.DfwcOrgCredentials.Password),
+                new KeyValuePair<string, string>("submit","Login"),
+            };
+            using (var resp = await hc.PostAsync("https://q3df.org/auth/login", new FormUrlEncodedContent(creds)))
+            {
+                resp.EnsureSuccessStatusCode();
+            }
+            return (hh, hc);
+        }
+        private async Task PerformExtraction((HttpClientHandler Handler, HttpClient Client) loggedContext, string initiator, int round)
         {
             try
             {
-                await Task.WhenAll(DoExtract(round, Physics.Vq3), DoExtract(round, Physics.Cpm));
+                await Task.WhenAll(DoExtract(loggedContext.Client, round, Physics.Vq3), DoExtract(loggedContext.Client, round, Physics.Cpm));
                 if (File.Exists(RunningFilename)) File.Delete(RunningFilename);
             }
             catch (Exception e)
@@ -89,6 +121,11 @@ namespace DfwcResultsBot
                 await File.WriteAllTextAsync(".log", e.ToString());
 
                 _round = round;
+            }
+            finally
+            {
+                loggedContext.Client.Dispose();
+                loggedContext.Handler.Dispose();
             }
         }
         // private const string _privatePrefix = "/w ";
@@ -107,10 +144,12 @@ namespace DfwcResultsBot
                         if (arguments.Length > 1 && int.TryParse(arguments[1], out var round))
                         {
                             _round = round;
+                            _places = null;
                             await Task.WhenAll(
-                                _voteCounter.Load(Physics.Vq3, ".none"),
-                                _voteCounter.Load(Physics.Cpm, ".none")
+                                _voteCounter.Load(Physics.Vq3, null),
+                                _voteCounter.Load(Physics.Cpm, null)
                             );
+                            _saveResetEvent.Set();
                             await _chat?.SendMessage($"Voting for round {_round} started!\n");
                         }
                         else
@@ -125,13 +164,32 @@ namespace DfwcResultsBot
                     {
                         if (_round != -1)
                         {
-                            _places = await _players.LoadPlaces(_round, _config.UseArchive);
+                            var context = await GetLoggedClient();
+                            _places = null;
+                            try
+                            {
+                                _places = await _players.LoadPlaces(context.Client, _round, _config.UseArchive);
+                            }
+                            catch
+                            {
+                                context.Client.Dispose();
+                                context.Handler.Dispose();
+                            }
                             if (_places == null)
                             {
-                                await _chat?.SendMessage($"{privatePrefix}{message.Sender} results are not ready yet");
+                                try
+                                {
+                                    await _chat?.SendMessage($"{privatePrefix}{message.Sender} results are not ready yet");
+                                }
+                                finally
+                                {
+                                    context.Client.Dispose();
+                                    context.Handler.Dispose();
+                                }
                                 return;
                             }
-                            _ = PerformExtraction(message.Sender, _round);
+                            _saveResetEvent.Set();
+                            _ = PerformExtraction(context, message.Sender, _round);
                             _round = -1;
                         }
                         else
@@ -213,19 +271,46 @@ namespace DfwcResultsBot
         }
         private const string RunningFilename = "running";
         private string PhysicsName(Physics physics, int round) => $"votes-{round}.{physics.ToString().ToLowerInvariant()}";
+#if NO_NITO
+            private ManualResetEventSlim _saveResetEvent = new ManualResetEventSlim(false);
+#else
+        private Nito.AsyncEx.AsyncManualResetEvent _saveResetEvent = new Nito.AsyncEx.AsyncManualResetEvent(false);
+#endif
         private async Task SaveStates()
         {
-            while (!_stop.Token.IsCancellationRequested)
+            try
             {
-                await Task.Delay(4000);
-                if (_round != -1)
+                while (!_stop.Token.IsCancellationRequested)
                 {
-                    await Task.WhenAll(
-                        File.WriteAllTextAsync(RunningFilename, _round.ToString()),
-                        _voteCounter.Save(Physics.Vq3, PhysicsName(Physics.Vq3, _round)),
-                        _voteCounter.Save(Physics.Cpm, PhysicsName(Physics.Cpm, _round))
-                    );
+                    // try { await Task.Delay(4000); } catch { }
+                    _saveResetEvent.Reset();
+                    try
+                    {
+#if NO_NITO
+                    await _saveResetEvent.WaitHandle.AsTask(TimeSpan.FromMilliseconds(4000));
+#else
+                        using (var cts = new CancellationTokenSource(4000))
+                            await _saveResetEvent.WaitAsync(cts.Token);
+#endif
+                    }
+                    catch (OperationCanceledException) { }
+                    if (_round != -1)
+                    {
+                        await Task.WhenAll(
+                            File.WriteAllTextAsync(RunningFilename, _round.ToString()),
+                            _voteCounter.Save(Physics.Vq3, PhysicsName(Physics.Vq3, _round)),
+                            _voteCounter.Save(Physics.Cpm, PhysicsName(Physics.Cpm, _round))
+                        );
+                    }
                 }
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e);
+            }
+            finally
+            {
+                Console.WriteLine("== Saving exited! ==");
             }
         }
         private async Task PeriodicMessage(TimeSpan period)
@@ -261,12 +346,17 @@ namespace DfwcResultsBot
                 _round = -1;
             }
             _ = SaveStates();
+            if (_config.AnounceTimeSeconds != null && _config.AnounceTimeSeconds.Value > 0)
+            {
+                _ = PeriodicMessage(TimeSpan.FromSeconds(_config.AnounceTimeSeconds.Value));
+            }
             while (!token.IsCancellationRequested)
             {
                 try
                 {
                     _connection = _connectionFactory();
-                    var connectionTask = _connection.Connect(_config.Credentials.Nickname, _config.Credentials.Password);
+                    using var _ = token.Register(() => _connection.Disconnect());
+                    var connectionTask = _connection.Connect(_config.TwitchTvCredentials.Nickname, _config.TwitchTvCredentials.Password);
                     _chat = await _connection.JoinChannel(_config.ChannelName);
                     // get messages
                     await foreach (var message in _chat.RecvMessages())
@@ -281,7 +371,7 @@ namespace DfwcResultsBot
                 {
                     try { await _connection.LeaveChannel(_config.ChannelName); }
                     catch { }
-                    await _connection.Disconnect();
+                    _connection.Terminate();
                     _connection.Dispose();
                 }
             }

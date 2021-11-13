@@ -14,6 +14,9 @@ Configuration is loaded from `config.json` at run location.
 
 ```json
 {
+  "PrivatePrefix": "", // prefix to private messages, used to be "/w " but wasn't work ='(
+  "AnounceTimeSeconds": 600, // time period to anounce that voting is active in seconds. Negative or null to disable. (default 600)
+  "Command": "vote", // used to replace prefix to commands (default vote)
   "UseArchive": false, // download whole archive and repack or download demos individualy
   "ChannelName": "w00deh", // channel to attach
   "ExtractDirectory": "./data", // directory to save all demos. Demos'll be saved at subdirectories `round<N>/vq3` and `round<N>/cpm`
@@ -34,8 +37,13 @@ Configuration is loaded from `config.json` at run location.
     "w00deh": 0,
     "rantrave1001010": 100
   },
-  "Credentials": {
-    // nickname and secret to bot's twitch login
+  "DfwcOrgCredentials": {
+    // nickname and secret to bot's q3df.org login
+    "Nickname": "<bot-nickname>",
+    "Password": "<bot-secret>" // meant to start with `oauth:`
+  },
+  "TwitchTvCredentials": {
+    // nickname and secret to bot's twitch.tv login
     "Nickname": "<bot-nickname>",
     "Password": "<bot-secret>" // meant to start with `oauth:`
   }

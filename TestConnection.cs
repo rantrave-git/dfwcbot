@@ -42,7 +42,6 @@ namespace DfwcResultsBot
         }
         CancellationTokenSource _stop = new CancellationTokenSource();
         ChatApi _channel = null;
-        TaskCompletionSource _completed = new TaskCompletionSource();
         private void Run(string nickname, string auth)
         {
             try
@@ -70,7 +69,6 @@ namespace DfwcResultsBot
             finally
             {
                 _stop.Cancel();
-                _completed.TrySetResult();
             }
         }
         public async Task Connect(string nickname, string auth)
@@ -78,17 +76,16 @@ namespace DfwcResultsBot
             await Task.Run(() => Run(nickname, auth));
         }
 
-        public async Task Disconnect()
+        public void Disconnect()
         {
             Console.WriteLine("Disconnect called");
             _stop.Cancel();
-            await _completed.Task;
-            _stop.Dispose();
         }
 
         public void Dispose()
         {
             Console.WriteLine("Dispose called");
+            _stop.Dispose();
         }
 
         public async Task<IChatApi> JoinChannel(string channel)

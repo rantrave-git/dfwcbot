@@ -42,15 +42,17 @@ namespace DfwcResultsBot
             private Nito.AsyncEx.AsyncManualResetEvent _resetEvent = new Nito.AsyncEx.AsyncManualResetEvent(false);
 #endif
             private ClientWebSocket _connection;
+            private CancellationToken _stop;
             private CancellationToken _terminate;
             private Buffer _sendBuffer = new Buffer();
 
             public string Channel { get; }
             private volatile bool _isJoined = false;
 
-            public TwitchChannelChatApi(ClientWebSocket connection, string channel, CancellationToken terminate)
+            public TwitchChannelChatApi(ClientWebSocket connection, string channel, CancellationToken stop, CancellationToken terminate)
             {
                 _connection = connection;
+                _stop = stop;
                 _terminate = terminate;
                 Channel = channel;
             }
@@ -85,12 +87,12 @@ namespace DfwcResultsBot
                 while (true)
                 {
                     while (_queue.TryDequeue(out var v)) yield return v;
-                    if (_connection.State != WebSocketState.Open || _terminate.IsCancellationRequested) break;
+                    if (_connection.State != WebSocketState.Open || _stop.IsCancellationRequested) break;
                     _resetEvent.Reset();
 #if NO_NITO
                     await _resetEvent.WaitHandle.AsTask(ts);
 #else
-                    await _resetEvent.WaitAsync(_terminate);
+                    await _resetEvent.WaitAsync(_stop);
 #endif
                 }
                 while (_queue.TryDequeue(out var v)) yield return v;
@@ -117,7 +119,6 @@ namespace DfwcResultsBot
         private Task<WebSocketReceiveResult> _receiveOperation = null;
 
         private ConcurrentDictionary<string, TwitchChannelChatApi> _channels = new ConcurrentDictionary<string, TwitchChannelChatApi>();
-        private TaskCompletionSource _completed = new TaskCompletionSource();
 
         private async Task<WebSocketReceiveResult> ReceiveAsync(byte[] buffer, CancellationToken cancellationToken = default)
         {
@@ -133,7 +134,7 @@ namespace DfwcResultsBot
                     }
                     else
                     {
-                        currentTask = _receiveOperation = _connection.ReceiveAsync(buffer, _terminate.Token);
+                        currentTask = _receiveOperation = _connection.ReceiveAsync(buffer, _stop.Token);
                     }
                 }
                 if (await Task.WhenAny(currentTask, cancellation.Task) == cancellation.Task)
@@ -173,7 +174,7 @@ namespace DfwcResultsBot
         public async Task<IChatApi> JoinChannel(string channel)
         {
             await _connectedState.Task;
-            var ca = _channels.GetOrAdd(Channel(channel), new TwitchChannelChatApi(_connection, Channel(channel), _terminate.Token));
+            var ca = _channels.GetOrAdd(Channel(channel), new TwitchChannelChatApi(_connection, Channel(channel), _stop.Token, _terminate.Token));
             await ca.Join();
             return ca;
         }
@@ -261,19 +262,22 @@ namespace DfwcResultsBot
             {
                 _connectedState.TrySetCanceled();
                 sendBuffer.Start().WriteNext("QUIT :chatbot").End();
-                Console.WriteLine($"> {Encoding.UTF8.GetString(sendBuffer.Value.Span)}");
-                await _connection.SendAsync(sendBuffer.Value, WebSocketMessageType.Text, true, _terminate.Token);
+                try
+                {
+                    Console.WriteLine($"> {Encoding.UTF8.GetString(sendBuffer.Value.Span)}");
+                    await _connection.SendAsync(sendBuffer.Value, WebSocketMessageType.Text, true, _terminate.Token);
+                    Console.WriteLine($"Disconnect sent.");
+                }
+                catch { }
                 ArrayPool<byte>.Shared.Return(recvBuffer);
-                _completed.TrySetResult();
                 Console.WriteLine("Execution done!");
             }
         }
-        public async Task Disconnect()
+        public void Disconnect()
         {
             Console.WriteLine("Disconnect called");
             if (_stop == null) return;
             _stop?.Cancel();
-            await _completed.Task;
         }
         public void Terminate()
         {

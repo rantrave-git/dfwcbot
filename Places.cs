@@ -12,13 +12,13 @@ namespace DfwcResultsBot
     class Places
     {
         private int _round;
-        private Dictionary<Physics, List<(string Nickname, string Demo, string Ref, string Time, int Place)>> _records;
+        private Dictionary<Physics, List<(string Nickname, string Demo, string Ref, int Place)>> _records;
         private Task<string> _archivePath;
-        public Places(int round, List<(string Nickname, string Demo, string Ref, string Time, int Place)> vq3,
-            List<(string Nickname, string Demo, string Ref, string Time, int Place)> cpm, Task<string> archivePath)
+        public Places(int round, List<(string Nickname, string Demo, string Ref, int Place)> vq3,
+            List<(string Nickname, string Demo, string Ref, int Place)> cpm, Task<string> archivePath)
         {
             _round = round;
-            _records = new Dictionary<Physics, List<(string Nickname, string Demo, string Ref, string Time, int Place)>>();
+            _records = new Dictionary<Physics, List<(string Nickname, string Demo, string Ref, int Place)>>();
             _records[Physics.Vq3] = vq3;
             _records[Physics.Cpm] = cpm;
             _archivePath = archivePath;
@@ -86,9 +86,9 @@ namespace DfwcResultsBot
             }
         }
 
-        public async Task Extract(int round, Physics physics, List<string> requiredNicks, List<string> votedNicks, string destination, int minNumber)
+        public async Task Extract(HttpClient client, int round, Physics physics, List<string> requiredNicks, List<string> votedNicks, string destination, int maxNumber)
         {
-            var dirpath = Path.Combine(destination, $"round{round}", $"dfwc-{_round}", physics.ToString().ToLowerInvariant());
+            var dirpath = Path.Combine(destination, $"round{round}", physics.ToString().ToLowerInvariant());
             if (!Directory.Exists(dirpath)) Directory.CreateDirectory(dirpath);
             var p = await _archivePath;
             if (p != null)
@@ -100,10 +100,10 @@ namespace DfwcResultsBot
                     {
                         var s = GetDemoName(physics, x);
                         return (i, s.Item1, s.Item2);
-                    }).OrderBy(x => (x.Item1, x.Item2)).Take(minNumber - reqs.Count).Select(x => (x.Item2, x.Item3)).ToList();
+                    }).OrderBy(x => (x.Item1, x.Item2)).Take(maxNumber - reqs.Count).Select(x => (x.Item2, x.Item3)).ToList();
                     foreach (var (ind, demo) in reqs.Concat(vots).Where(x => x.Item2 != null))
                     {
-                        z.GetEntry(demo).ExtractToFile(Path.Combine(dirpath, $"{ind:000}.dm_68"));
+                        z.GetEntry(demo).ExtractToFile(Path.Combine(dirpath, $"{ind + 1:000}.dm_68"));
                     }
 
                     Console.WriteLine(String.Join("\n", z.Entries.Select(x => x.Name)));
@@ -117,10 +117,9 @@ namespace DfwcResultsBot
                   {
                       var s = GetDemoUrl(physics, x);
                       return (i, s.Item1, s.Item2);
-                  }).OrderBy(x => (x.Item1, x.Item2)).Take(minNumber - reqs.Count).Select(x => (x.Item2, x.Item3)).ToList();
+                  }).OrderBy(x => (x.Item1, x.Item2)).Take(maxNumber - reqs.Count).Select(x => (x.Item2, x.Item3)).ToList();
 
-                using var hc = new HttpClient();
-                await Task.WhenAll(reqs.Concat(vots).Where(x => x.Item2 != null).Select(x => DownloadAndSave(hc, x.Item2, Path.Combine(dirpath, $"{x.Item1:000}.dm_68"))));
+                await Task.WhenAll(reqs.Concat(vots).Where(x => x.Item2 != null).Select(x => DownloadAndSave(client, x.Item2, Path.Combine(dirpath, $"{x.Item1 + 1:000}.dm_68"))));
             }
         }
     }

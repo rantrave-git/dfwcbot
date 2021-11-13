@@ -23,19 +23,19 @@ namespace DfwcResultsBot
 
         public async Task Save(Physics physics, string filename)
         {
-            using (var s = File.OpenWrite(filename))
-            using (var sw = new StreamWriter(s))
+            using (var sw = new StreamWriter(filename, false))
             {
                 foreach (var i in _votes[physics])
                 {
                     await sw.WriteLineAsync($"{i.Key}\t{i.Value}");
                 }
+                sw.WriteLine();
             }
         }
         public async Task Load(Physics physics, string filename)
         {
             _votes[physics].Clear();
-            if (!File.Exists(filename)) return;
+            if (filename == null || !File.Exists(filename)) return;
             using (var s = File.OpenRead(filename))
             using (var sw = new StreamReader(s))
             {

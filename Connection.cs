@@ -17,7 +17,7 @@ namespace DfwcResultsBot
     interface IConnection
     {
         Task Connect(string nickname, string auth);
-        Task Disconnect();
+        void Disconnect();
         void Dispose();
         Task<IChatApi> JoinChannel(string channel);
         ValueTask LeaveChannel(string channel);
