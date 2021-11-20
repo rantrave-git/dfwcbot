@@ -325,9 +325,9 @@ namespace DfwcResultsBot
                     resp.EnsureSuccessStatusCode();
                     var places = JsonSerializer.Deserialize<JsonPlaces>(await resp.Content.ReadAsStringAsync());
                     var vq3 = places.Vq3.Select(x => (int.Parse(x.Value.Rank), x.Value)).OrderBy(x => x.Item1)
-                                        .Select(x => (x.Item2.Name, new Uri(x.Item2.Demo), x.Item1)).ToList();
-                    var cpm = places.Vq3.Select(x => (int.Parse(x.Value.Rank), x.Value)).OrderBy(x => x.Item1)
-                                        .Select(x => (x.Item2.Name, new Uri(x.Item2.Demo), x.Item1)).ToList();
+                                        .Select(x => (x.Item2.Name.Trim(), new Uri(x.Item2.Demo), x.Item1)).ToList();
+                    var cpm = places.Cpm.Select(x => (int.Parse(x.Value.Rank), x.Value)).OrderBy(x => x.Item1)
+                                        .Select(x => (x.Item2.Name.Trim(), new Uri(x.Item2.Demo), x.Item1)).ToList();
                     return new Places(round, vq3, cpm, archive);
                 }
             }
