@@ -4,6 +4,7 @@ Bot for voting demos to be viewed at dfwc review.
 
 Usage:
 `!vote start <round>` - to start voting for round (only priveleged)
+`!vote restart <round>` - to start voting for round and erase any existing voting results (only priveleged)
 `!vote vq3 <player-nick>` or `!vote cpm <player-nick>` - to vote for player (everyone)
 `!vote stop` - to stop voting and download demos (only priveleged)
 `!vote stats vq3|cpm` - to list votes (only priveleged)
@@ -18,6 +19,7 @@ Configuration is loaded from `config.json` at run location.
   "AnounceTimeSeconds": 600, // time period to anounce that voting is active in seconds. Negative or null to disable. (default 600)
   "Command": "vote", // used to replace prefix to commands (default vote)
   "UseArchive": false, // download whole archive and repack or download demos individualy
+  "UseJson": true, // download results table in json format (default true)
   "ChannelName": "w00deh", // channel to attach
   "ExtractDirectory": "./data", // directory to save all demos. Demos'll be saved at subdirectories `round<N>/vq3` and `round<N>/cpm`
   "Superusers": ["w00deh"], // list of priveleged users (ones who can start/stop voting)

@@ -35,6 +35,8 @@ namespace DfwcResultsBot
         public Dictionary<string, int> UserWeights { get; set; }
         public Credentials TwitchTvCredentials { get; set; }
         public Credentials DfwcOrgCredentials { get; set; }
+        public bool UseJson { get; set; } = true;
+
         public SelectionConfiguration GetPhysicsConfig(Physics physics)
         {
             switch (physics)
@@ -69,8 +71,9 @@ namespace DfwcResultsBot
             _connectionFactory = connectionFactory;
             _config = config;
             _commandRe = new Regex(@$"^([\\/]w\s.*)*[!+]{config.Command}\s+(.*)", RegexOptions.Compiled);
+            _players.UseJson = _config.UseJson;
         }
-        private List<(int, string)> SelectDemolist(Physics physics)
+        private List<(int, Uri)> SelectDemolist(Physics physics)
         {
             var top = _places.Top(physics, _config.GetPhysicsConfig(physics).TotalDemos);
             var rq = _config.GetPhysicsConfig(physics).RequiredTop;
@@ -106,7 +109,7 @@ namespace DfwcResultsBot
             }
             return (hh, hc);
         }
-        private async Task PerformExtraction(string initiator, int round)
+        private async Task PerformExtraction(string initiator, int round, Func<bool, Task> onCompletion)
         {
             var demosVq3 = SelectDemolist(Physics.Vq3);
             var demosCpm = SelectDemolist(Physics.Cpm);
@@ -115,6 +118,7 @@ namespace DfwcResultsBot
             if (!Directory.Exists(dirpathVq3)) Directory.CreateDirectory(dirpathVq3);
             if (!Directory.Exists(dirpathCpm)) Directory.CreateDirectory(dirpathCpm);
 
+            bool success = true;
             for (int i = 0; i < 20; ++i)
             {
                 var loggedContext = await GetLoggedClient();
@@ -135,6 +139,7 @@ namespace DfwcResultsBot
                     if (demosVq3.Count == 0 && demosCpm.Count == 0) break;
                     if (i == 19)
                     {
+                        success = false;
                         File.WriteAllText(".log", $"There was errors when downloading:\n" +
                             $"Vq3:\n{String.Join("\n", demosVq3.Select(x => $"  {x.Item1}: {x.Item2}"))}" +
                             $"Cpm:\n{String.Join("\n", demosCpm.Select(x => $"  {x.Item1}: {x.Item2}"))}"
@@ -148,9 +153,25 @@ namespace DfwcResultsBot
                     loggedContext.Handler.Dispose();
                 }
             }
+            await onCompletion(success);
+        }
+
+        private const string BackupDirectoryPath = "backups";
+
+        private void BackupFile(string filename)
+        {
+            if (Directory.Exists(BackupDirectoryPath)) Directory.CreateDirectory(BackupDirectoryPath);
+            if (File.Exists(filename))
+            {
+                File.Copy(filename, Path.Combine(BackupDirectoryPath, $"{filename}.{DateTime.UtcNow.Ticks}.bak"));
+            }
         }
         // private const string _privatePrefix = "/w ";
         // private const string _privatePrefix = "";
+        private async Task SendMessage(string message)
+        {
+            await (_chat?.SendMessage(message) ?? Task.CompletedTask);
+        }
         private async Task HandleMessage(ChatMessage message)
         {
             var privatePrefix = _config.PrivatePrefix;
@@ -167,15 +188,41 @@ namespace DfwcResultsBot
                             _round = round;
                             _places = null;
                             await Task.WhenAll(
-                                _voteCounter.Load(Physics.Vq3, null),
-                                _voteCounter.Load(Physics.Cpm, null)
+                                _voteCounter.Load(Physics.Vq3, PhysicsName(Physics.Vq3, round)),
+                                _voteCounter.Load(Physics.Cpm, PhysicsName(Physics.Cpm, round))
                             );
                             _saveResetEvent.Set();
-                            await _chat?.SendMessage($"Voting for round {_round} started!\n");
+                            await SendMessage($"Voting for round {_round} started!\n");
                         }
                         else
                         {
-                            await _chat?.SendMessage($"{privatePrefix}{message.Sender} usage: `start <round-name>`");
+                            await SendMessage($"{privatePrefix}{message.Sender} usage: `start <round-name>`");
+                        }
+                    }
+                }
+                if (arguments[0].ToLowerInvariant() == "restart")
+                {
+                    if (_config.Superusers.Contains(message.Sender))
+                    {
+                        if (arguments.Length > 1 && int.TryParse(arguments[1], out var round))
+                        {
+                            if (_round != -1)
+                            {
+                                BackupFile(PhysicsName(Physics.Vq3, round));
+                                BackupFile(PhysicsName(Physics.Cpm, round));
+                            }
+                            _round = round;
+                            _places = null;
+                            await Task.WhenAll(
+                                _voteCounter.Load(Physics.Vq3, PhysicsName(Physics.Vq3, round)),
+                                _voteCounter.Load(Physics.Cpm, PhysicsName(Physics.Cpm, round))
+                            );
+                            _saveResetEvent.Set();
+                            await SendMessage($"Voting for round {_round} started!\n");
+                        }
+                        else
+                        {
+                            await SendMessage($"{privatePrefix}{message.Sender} usage: `start <round-name>`");
                         }
                     }
                 }
@@ -192,7 +239,7 @@ namespace DfwcResultsBot
                                 _places = await _players.LoadPlaces(context.Client, _round, _config.UseArchive);
                                 if (_places == null)
                                 {
-                                    await _chat?.SendMessage($"{privatePrefix}{message.Sender} results are not ready yet");
+                                    await SendMessage($"{privatePrefix}{message.Sender} results are not ready yet");
                                     return;
                                 }
                             }
@@ -202,12 +249,16 @@ namespace DfwcResultsBot
                                 context.Handler.Dispose();
                             }
                             _saveResetEvent.Set();
-                            _ = PerformExtraction(message.Sender, _round);
+                            _ = PerformExtraction(message.Sender, _round, async x =>
+                            {
+                                if (x) await SendMessage($"{privatePrefix}{message.Sender}, Demos successfully downloaded!");
+                                else await SendMessage($"{privatePrefix}{message.Sender}, Demos are failed to download!");
+                            });
                             _round = -1;
                         }
                         else
                         {
-                            await _chat?.SendMessage($"{privatePrefix}{message.Sender} round voting is not started");
+                            await SendMessage($"{privatePrefix}{message.Sender} round voting is not started");
                         }
                     }
                 }
@@ -226,16 +277,16 @@ namespace DfwcResultsBot
                                 _statRateLimitBorder[physics] = DateTimeOffset.UtcNow;
                                 var sum = _voteCounter.Summup(physics, _config.UserWeights);
 
-                                await _chat?.SendMessage($"Voting for round {_round} (top 10): {String.Join(" ", sum.Take(10).Select((x, i) => $"{i + 1}. {x.Item1} ({x.Item2})."))}");
+                                await SendMessage($"Voting for round {_round} (top 10): {String.Join(" ", sum.Take(10).Select((x, i) => $"{i + 1}. {x.Item1} ({x.Item2})."))}");
                             }
                             else
                             {
-                                await _chat?.SendMessage($"{privatePrefix}{message.Sender} usage: `stats <physics>`");
+                                await SendMessage($"{privatePrefix}{message.Sender} usage: `stats <physics>`");
                             }
                         }
                         else
                         {
-                            await _chat?.SendMessage($"{privatePrefix}{message.Sender} round voting is not started");
+                            await SendMessage($"{privatePrefix}{message.Sender} round voting is not started");
                         }
                     }
                 }
@@ -246,7 +297,7 @@ namespace DfwcResultsBot
                         if (arguments.Length > 2)
                         {
                             var text = match.Groups[2].Value.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[2];
-                            await _chat?.SendMessage($"{arguments[1]} {text}");
+                            await SendMessage($"{arguments[1]} {text}");
                         }
                     }
                 }
@@ -257,7 +308,7 @@ namespace DfwcResultsBot
                         if (arguments.Length > 2)
                         {
                             var text = match.Groups[2].Value.Split(' ', 3, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)[2];
-                            await _chat?.SendMessage($"{privatePrefix}{arguments[1]} {text}");
+                            await SendMessage($"{privatePrefix}{arguments[1]} {text}");
                         }
                     }
                 }
@@ -272,12 +323,12 @@ namespace DfwcResultsBot
                             {
                                 _voteCounter.AddVote(physics, message.Sender, nick);
                             }
-                            await _chat?.SendMessage($"{privatePrefix}{message.Sender} {msg}");
+                            await SendMessage($"{privatePrefix}{message.Sender} {msg}");
                         }
                     }
                     else
                     {
-                        await _chat?.SendMessage($"{privatePrefix}{message.Sender} round voting is not started yet");
+                        await SendMessage($"{privatePrefix}{message.Sender} round voting is not started yet");
                     }
                 }
             }
@@ -335,7 +386,7 @@ namespace DfwcResultsBot
                     await Task.Delay(period, _stop.Token);
                     if (_round != -1)
                     {
-                        await _chat?.SendMessage($"Demo watch voting for round {_round} is up.\nType: `!{_config.Command} vq3 <player-name>` or `!{_config.Command} cpm <player-name>` to vote.\nList of all players at: https://dfwc.q3df.org/comp/dfwc2021/standings.html");
+                        await SendMessage($"Demo watch voting for round {_round} is up.\nType: `!{_config.Command} vq3 <player-name>` or `!{_config.Command} cpm <player-name>` to vote.\nList of all players at: https://dfwc.q3df.org/comp/dfwc2021/standings.html");
                     }
                 }
             }

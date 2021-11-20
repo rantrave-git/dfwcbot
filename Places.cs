@@ -12,13 +12,13 @@ namespace DfwcResultsBot
     class Places
     {
         private int _round;
-        private Dictionary<Physics, List<(string Nickname, string Demo, string Ref, int Place)>> _records;
+        private Dictionary<Physics, List<(string Nickname, Uri Ref, int Place)>> _records;
         private Task<string> _archivePath;
-        public Places(int round, List<(string Nickname, string Demo, string Ref, int Place)> vq3,
-            List<(string Nickname, string Demo, string Ref, int Place)> cpm, Task<string> archivePath)
+        public Places(int round, List<(string Nickname, Uri Ref, int Place)> vq3,
+            List<(string Nickname, Uri Ref, int Place)> cpm, Task<string> archivePath)
         {
             _round = round;
-            _records = new Dictionary<Physics, List<(string Nickname, string Demo, string Ref, int Place)>>();
+            _records = new Dictionary<Physics, List<(string Nickname, Uri Ref, int Place)>>();
             _records[Physics.Vq3] = vq3;
             _records[Physics.Cpm] = cpm;
             _archivePath = archivePath;
@@ -46,18 +46,17 @@ namespace DfwcResultsBot
 
         //     return (target.i, new Uri(new Uri("https://dfwc.q3df.org"), $"/comp/dfwc2021/round/3/demo/{Uri.EscapeDataString(target.x.Demo)}"));
         // }
-        private (int, string) GetPlaceAndDemo(Physics physics, string nickname)
+        private (int, Uri) GetPlaceAndDemo(Physics physics, string nickname)
         {
             var target = _records[physics].Select((x, i) => (i, x)).FirstOrDefault(x => x.x.Nickname == nickname);
-            if (target.x.Demo == null)
+            if (target.x.Ref == null)
             {
                 Console.WriteLine($"Player '{nickname}' has no demo in '{physics}'");
                 return (0, null);
             }
-            return (target.i, target.x.Demo);
+            return (target.i, target.x.Ref);
         }
-        private string GetArchivePath(Physics physics, string demoname) => $"{physics.ToString().ToLowerInvariant()}/{demoname}";
-        private Uri GetUri(int round, string demoname) => new Uri(new Uri("https://dfwc.q3df.org"), $"/comp/dfwc2021/round/{round}/demo/{Uri.EscapeDataString(demoname)}");
+        private string GetArchivePath(Physics physics, Uri demouri) => $"{physics.ToString().ToLowerInvariant()}/{PlayersDict.Decode(Uri.UnescapeDataString(demouri.LocalPath))}";
         public List<string> Top(Physics physics, int top) => _records[physics].Select(x => x.Nickname).Take(top).ToList();
         private async Task<bool> TryDownloadAndSave(HttpClient client, Uri uri, string targetName)
         {
@@ -105,7 +104,7 @@ namespace DfwcResultsBot
             }
         }
 
-        public async Task<List<(int, string)>> TryExtractAndSave(int round, Physics physics, List<(int, string)> demos, string dirpath)
+        public async Task<List<(int, Uri)>> TryExtractAndSave(int round, Physics physics, List<(int, Uri)> demos, string dirpath)
         {
             var p = await _archivePath;
             if (p != null)
@@ -139,7 +138,7 @@ namespace DfwcResultsBot
             Console.WriteLine("No archive found");
             return demos;
         }
-        public List<(int, string)> ListDemos(Physics physics, List<string> requiredNicks, List<string> votedNicks, int maxNumber)
+        public List<(int, Uri)> ListDemos(Physics physics, List<string> requiredNicks, List<string> votedNicks, int maxNumber)
         {
             var reqs = requiredNicks.Select(x => GetPlaceAndDemo(physics, x)).Where(x => x.Item2 != null).ToList();
             var vots = votedNicks.Where(x => !requiredNicks.Contains(x)).Select((x, i) =>
@@ -153,12 +152,12 @@ namespace DfwcResultsBot
 
             return reqs.Concat(vots).ToList();
         }
-        public async Task<List<(int, string)>> TryDownload(HttpClient client, int round, Physics physics, List<(int, string)> demos, string dirpath)
+        public async Task<List<(int, Uri)>> TryDownload(HttpClient client, int round, Physics physics, List<(int, Uri)> demos, string dirpath)
         {
             var failed = await Task.WhenAll(demos.Select(async (x, i) =>
             {
                 await Task.Delay(i * 500);
-                if (await TryDownloadAndSave(client, GetUri(round, x.Item2), Path.Combine(dirpath, $"{x.Item1 + 1:000}.dm_68")))
+                if (await TryDownloadAndSave(client, x.Item2, Path.Combine(dirpath, $"{x.Item1 + 1:000}.dm_68")))
                 {
                     return (0, null);
                 }

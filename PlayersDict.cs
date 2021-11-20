@@ -5,6 +5,8 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
@@ -15,6 +17,7 @@ namespace DfwcResultsBot
     class PlayersDict
     {
         public List<string> _nicknames;
+        public bool UseJson { get; set; } = true;
 
         public bool FindNickname(string nickname, out string actualname, out string message)
         {
@@ -202,7 +205,7 @@ namespace DfwcResultsBot
             ["atilde"] = '\x00E3',
             ["auml"] = '\x00E4',
         };
-        static private string Decode(string s)
+        static public string Decode(string s)
         {
             if (s == null) return null;
             char[] result = ArrayPool<char>.Shared.Rent(s.Length);
@@ -279,46 +282,84 @@ namespace DfwcResultsBot
                 ArrayPool<byte>.Shared.Return(array);
             }
         }
-        static private (string Name, string Demoname, string Demoref) BuildString(HtmlNode node)
+        static private (string Name, string Demoname) BuildString(HtmlNode node)
         {
-            if (node == null) return (null, null, null);
+            if (node == null) return (null, null);
             var name = System.Web.HttpUtility.HtmlDecode(node.ChildNodes.FirstOrDefault(x => x.HasClass("nick"))?.InnerText);
-            if (name == null) return (null, null, null);
+            if (name == null) return (null, null);
             name = name.Trim();
             var demoref = PlayersDict.Decode(Uri.UnescapeDataString(node.Descendants("a").FirstOrDefault()?.GetAttributeValue("href", null)));
             var demoname = demoref.Split('/').LastOrDefault();
 
-            return (name, demoname, demoref);
+            return (name, demoname);// , demoref);
         }
-
+        class Place
+        {
+            [JsonPropertyName("rank")]
+            public string Rank { get; set; }
+            [JsonPropertyName("name")]
+            public string Name { get; set; }
+            [JsonPropertyName("demo")]
+            public string Demo { get; set; }
+            [JsonPropertyName("time_ms")]
+            public string TimeMs { get; set; }
+        }
+        class JsonPlaces
+        {
+            [JsonPropertyName("vq3")]
+            public Dictionary<string, Place> Vq3 { get; set; }
+            [JsonPropertyName("cpm")]
+            public Dictionary<string, Place> Cpm { get; set; }
+        }
+        private Uri GetUri(int round, string demoname) => new Uri(new Uri("https://dfwc.q3df.org"), $"/comp/dfwc2021/round/{round}/demo/{Uri.EscapeDataString(demoname)}");
         public async Task<Places> LoadPlaces(HttpClient hc, int round, bool loadArchive = false)
         {
             var archive = loadArchive ? LoadAllDemos(hc, round) : Task.FromResult<string>(null);
 
-            string html;
-            using (var resp = await hc.GetAsync($"https://dfwc.q3df.org/comp/dfwc2021/round/{round}/stream.html"))
+            try
             {
-                if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
-                resp.EnsureSuccessStatusCode();
-                html = await resp.Content.ReadAsStringAsync();
+                if (!UseJson) throw new Exception("Forced to not use json format");
+                using (var resp = await hc.GetAsync($"https://dfwc.q3df.org/comp/dfwc2021/round/{round}/export?format=json"))
+                {
+                    if (resp.StatusCode == System.Net.HttpStatusCode.Forbidden) return null;
+                    resp.EnsureSuccessStatusCode();
+                    var places = JsonSerializer.Deserialize<JsonPlaces>(await resp.Content.ReadAsStringAsync());
+                    var vq3 = places.Vq3.Select(x => (int.Parse(x.Value.Rank), x.Value)).OrderBy(x => x.Item1)
+                                        .Select(x => (x.Item2.Name, new Uri(x.Item2.Demo), x.Item1)).ToList();
+                    var cpm = places.Vq3.Select(x => (int.Parse(x.Value.Rank), x.Value)).OrderBy(x => x.Item1)
+                                        .Select(x => (x.Item2.Name, new Uri(x.Item2.Demo), x.Item1)).ToList();
+                    return new Places(round, vq3, cpm, archive);
+                }
             }
-            var htmlDoc = new HtmlDocument();
-            htmlDoc.LoadHtml(html);
-
-            html = htmlDoc.GetElementbyId("preview_set").InnerHtml;
-
-            htmlDoc = new HtmlDocument(); // does it nessesary?
-            htmlDoc.LoadHtml(html);
-            var table = htmlDoc.DocumentNode.Descendants("div").Where(x => x.HasClass("line")).Select((x, i) =>
+            catch (Exception e)
             {
-                var vq3 = x.ChildNodes.FirstOrDefault(x => x.HasClass("vq3"));
-                var cpm = x.ChildNodes.FirstOrDefault(x => x.HasClass("cpm"));
-                return (BuildString(vq3), BuildString(cpm), i);
-            }).ToList();
-            var vq3 = table.Select(x => (x.Item1.Name, x.Item1.Demoname, x.Item1.Demoref, x.Item3)).Where(x => x.Name != null).ToList();
-            var cpm = table.Select(x => (x.Item2.Name, x.Item2.Demoname, x.Item2.Demoref, x.Item3)).Where(x => x.Name != null).ToList();
-            if (vq3.Count == 0 && cpm.Count == 0) return null;
-            return new Places(round, vq3, cpm, archive);
+                Console.WriteLine($"Warning!\n{e}\nFallback to parsing.");
+
+                string html;
+                using (var resp = await hc.GetAsync($"https://dfwc.q3df.org/comp/dfwc2021/round/{round}/stream.html"))
+                {
+                    if (resp.StatusCode == System.Net.HttpStatusCode.NotFound) return null;
+                    resp.EnsureSuccessStatusCode();
+                    html = await resp.Content.ReadAsStringAsync();
+                }
+                var htmlDoc = new HtmlDocument();
+                htmlDoc.LoadHtml(html);
+
+                html = htmlDoc.GetElementbyId("preview_set").InnerHtml;
+
+                htmlDoc = new HtmlDocument(); // does it nessesary?
+                htmlDoc.LoadHtml(html);
+                var table = htmlDoc.DocumentNode.Descendants("div").Where(x => x.HasClass("line")).Select((x, i) =>
+                {
+                    var vq3 = x.ChildNodes.FirstOrDefault(x => x.HasClass("vq3"));
+                    var cpm = x.ChildNodes.FirstOrDefault(x => x.HasClass("cpm"));
+                    return (BuildString(vq3), BuildString(cpm), i);
+                }).ToList();
+                var vq3 = table.Select(x => (x.Item1.Name, GetUri(round, x.Item1.Demoname), x.Item3)).Where(x => x.Name != null).ToList();
+                var cpm = table.Select(x => (x.Item2.Name, GetUri(round, x.Item2.Demoname), x.Item3)).Where(x => x.Name != null).ToList();
+                if (vq3.Count == 0 && cpm.Count == 0) return null;
+                return new Places(round, vq3, cpm, archive);
+            }
         }
     }
 }
